@@ -69,7 +69,7 @@ This package comprises the following classes that can be imported in Python and 
 The repository further comprises:
 
 - Three examples on how to use Bert (in the [`examples` folder](./examples)):
-  - [`extract_features.py`](./examples/extract_features.py) - Show how to extract hidden states from an instance of `BertModel`,
+  - [`extract_features.py`](./examples/ .py) - Show how to extract hidden states from an instance of `BertModel`,
   - [`run_classifier.py`](./examples/run_classifier.py) - Show how to fine-tune an instance of `BertForSequenceClassification` on GLUE's MRPC task,
   - [`run_squad.py`](./examples/run_squad.py) - Show how to fine-tune an instance of `BertForQuestionAnswering` on SQuAD v1.0 task.
 
