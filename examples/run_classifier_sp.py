@@ -30,6 +30,8 @@ from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 from pytorch_pretrained_bert.modeling import BertForSequenceClassification
 from pytorch_pretrained_bert.optimization import BertAdam
 from pytorch_pretrained_bert.tokenization import BertTokenizer
+import tokenization_sentencepiece as tokenization
+
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
@@ -468,20 +470,20 @@ def main():
     parser.add_argument("--data_dir",
                         default=None,
                         type=str,
-                        required=True,
+                        # required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
-    parser.add_argument("--bert_model", default=None, type=str, required=True,
+    parser.add_argument("--bert_model", default=None, type=str, # required=True,
                         help="Bert pre-trained model selected in the list: bert-base-uncased, "
                              "bert-large-uncased, bert-base-cased, bert-base-multilingual, bert-base-chinese.")
     parser.add_argument("--task_name",
                         default=None,
                         type=str,
-                        required=True,
+                        # required=True,
                         help="The name of the task to train.")
     parser.add_argument("--output_dir",
                         default=None,
                         type=str,
-                        required=True,
+                        # required=True,
                         help="The output directory where the model checkpoints will be written.")
 
     ## Other parameters
@@ -531,7 +533,7 @@ def main():
     parser.add_argument("--local_rank",
                         type=int,
                         default=-1,
-                        help="local_rank for distributed training on gpus")
+                        help="√ for distributed training on gpus")
     parser.add_argument('--seed',
                         type=int,
                         default=42,
@@ -553,6 +555,18 @@ def main():
                         help='Loss scaling, positive power of 2 values can improve fp16 convergence.')
 
     args = parser.parse_args()
+
+    # configuration
+    args.task_name = "RITC"
+    args.do_train = True
+    args.do_eval = True
+    args.data_dir = "../glue_data//RITC/"
+    args.bert_model = "/home/weicheng.zhu/experiment/bert-japanese/model"
+    args.max_seq_length = 128
+    args.train_batch_size = 32
+    args.learning_rate = 2e-5
+    args.num_train_epochs = 3.0
+    args.output_dir ="/tmp/ritc_output_best/"
 
     processors = {
         "cola": ColaProcessor,
@@ -613,7 +627,12 @@ def main():
     num_labels = num_labels_task[task_name]
     label_list = processor.get_labels()
 
-    tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
+    model_file = os.path.join(args.bert_model, "wiki-ja.model")
+    vocab_file = os.path.join(args.bert_model, "wiki-ja.vocab")
+    tokenizer = tokenization.FullTokenizer(
+        model_file=model_file, vocab_file=vocab_file,
+        do_lower_case=args.do_lower_case)
+    # tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
 
     train_examples = None
     num_train_steps = None
@@ -624,8 +643,6 @@ def main():
 
     # Prepare model
     model = BertForSequenceClassification.from_pretrained(args.bert_model,
-                                                          cache_dir=PYTORCH_PRETRAINED_BERT_CACHE / 'distributed_{}'.format(
-                                                              args.local_rank),
                                                           num_labels=num_labels)
     if args.fp16:
         model.half()
@@ -756,19 +773,19 @@ def main():
                     tmp_eval_f1 = f1(logits, label_ids)
 
                     eval_loss += tmp_eval_loss.mean().item()
-                    eval_accuracy += tmp_eval_accuracy
-                    eval_precision += tmp_eval_precision
-                    eval_recall += tmp_eval_recall
-                    eval_f1 += tmp_eval_f1
+                    eval_accuracy += tmp_eval_accuracy * input_ids.size(0)
+                    eval_precision += tmp_eval_precision * input_ids.size(0)
+                    eval_recall += tmp_eval_recall * input_ids.size(0)
+                    eval_f1 += tmp_eval_f1 * input_ids.size(0)
 
                     nb_eval_examples += input_ids.size(0)
                     nb_eval_steps += 1
 
                 eval_loss = eval_loss / nb_eval_steps
-                eval_accuracy = eval_accuracy / nb_eval_steps
-                eval_precision = eval_precision / nb_eval_steps
-                eval_recall = eval_recall / nb_eval_steps
-                eval_f1 = eval_f1 / nb_eval_steps
+                eval_accuracy = eval_accuracy / nb_eval_examples
+                eval_precision = eval_precision / nb_eval_examples
+                eval_recall = eval_recall / nb_eval_examples
+                eval_f1 = eval_f1 / nb_eval_examples
 
                 result = {'eval_loss': eval_loss,
                           'eval_accuracy': eval_accuracy,
