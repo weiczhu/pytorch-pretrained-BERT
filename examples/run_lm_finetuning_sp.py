@@ -20,23 +20,26 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 import argparse
 import logging
 import os
+os.environ['CUDA_VISIBLE_DEVICES'] = "1, 2"
+
 import random
 from io import open
 
 import numpy as np
+import numpy.ma as ma
 import torch
-from torch.utils.data import DataLoader, Dataset, RandomSampler
+from pytorch_pretrained_bert.modeling import BertForPreTraining, BertConfig
+from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
+from pytorch_pretrained_bert.tokenization import BertTokenizer
+from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import Dataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from pytorch_pretrained_bert.modeling import BertForPreTraining
-from pytorch_pretrained_bert.tokenization import BertTokenizer
-from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
+import MeCab
 
-import tokenization_sentencepiece as tokenization
+tagger = MeCab.Tagger("-Owakati")
 
-from torch.utils.data import Dataset
-import random
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
@@ -62,7 +65,7 @@ class BERTDataset(Dataset):
         # for loading samples in memory
         self.current_random_doc = 0
         self.num_docs = 0
-        self.sample_to_doc = [] # map sample index to doc and line
+        self.sample_to_doc = []  # map sample index to doc and line
 
         # load samples into memory
         if on_memory:
@@ -75,10 +78,10 @@ class BERTDataset(Dataset):
                     if line == "":
                         self.all_docs.append(doc)
                         doc = []
-                        #remove last added sample because there won't be a subsequent line anymore in the doc
+                        # remove last added sample because there won't be a subsequent line anymore in the doc
                         self.sample_to_doc.pop()
                     else:
-                        #store as one sample
+                        # store as one sample
                         sample = {"doc_id": len(self.all_docs),
                                   "line": len(doc)}
                         self.sample_to_doc.append(sample)
@@ -124,6 +127,8 @@ class BERTDataset(Dataset):
                 self.file = open(self.corpus_path, "r", encoding=self.encoding)
 
         t1, t2, is_next_label = self.random_sent(item)
+        # t1 = tagger.parse(t1).strip()
+        # t2 = tagger.parse(t2).strip()
 
         # tokenize
         tokens_a = self.tokenizer.tokenize(t1)
@@ -173,14 +178,14 @@ class BERTDataset(Dataset):
         if self.on_memory:
             sample = self.sample_to_doc[item]
             t1 = self.all_docs[sample["doc_id"]][sample["line"]]
-            t2 = self.all_docs[sample["doc_id"]][sample["line"]+1]
+            t2 = self.all_docs[sample["doc_id"]][sample["line"] + 1]
             # used later to avoid random nextSentence from same doc
             self.current_doc = sample["doc_id"]
             return t1, t2
         else:
             if self.line_buffer is None:
                 # read first non-empty line of file
-                while t1 == "" :
+                while t1 == "":
                     t1 = next(self.file).strip()
                     t2 = next(self.file).strip()
             else:
@@ -191,7 +196,7 @@ class BERTDataset(Dataset):
                 while t2 == "" or t1 == "":
                     t1 = next(self.file).strip()
                     t2 = next(self.file).strip()
-                    self.current_doc = self.current_doc+1
+                    self.current_doc = self.current_doc + 1
             self.line_buffer = t2
 
         assert t1 != ""
@@ -208,15 +213,15 @@ class BERTDataset(Dataset):
         # the random document is not the same as the document we're processing.
         for _ in range(10):
             if self.on_memory:
-                rand_doc_idx = random.randint(0, len(self.all_docs)-1)
+                rand_doc_idx = random.randint(0, len(self.all_docs) - 1)
                 rand_doc = self.all_docs[rand_doc_idx]
                 line = rand_doc[random.randrange(len(rand_doc))]
             else:
                 rand_index = random.randint(1, self.corpus_lines if self.corpus_lines < 1000 else 1000)
-                #pick random line
+                # pick random line
                 for _ in range(rand_index):
                     line = self.get_next_line()
-            #check if our picked random line is really from another doc like we want it to be
+            # check if our picked random line is really from another doc like we want it to be
             if self.current_random_doc != self.current_doc:
                 break
         return line
@@ -225,7 +230,7 @@ class BERTDataset(Dataset):
         """ Gets next line of random_file and starts over when reaching end of file"""
         try:
             line = next(self.random_file).strip()
-            #keep track of which document we are currently looking at to later avoid having the same doc as t1
+            # keep track of which document we are currently looking at to later avoid having the same doc as t1
             if line == "":
                 self.current_random_doc = self.current_random_doc + 1
                 line = next(self.random_file).strip()
@@ -386,11 +391,11 @@ def convert_example_to_features(example, max_seq_length, tokenizer):
         logger.info("*** Example ***")
         logger.info("guid: %s" % (example.guid))
         logger.info("tokens: %s" % " ".join(
-                [str(x) for x in tokens]))
+            [str(x) for x in tokens]))
         logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
         logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
         logger.info(
-                "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
         logger.info("LM label: %s " % (lm_label_ids))
         logger.info("Is next sentence label: %s " % (example.is_next))
 
@@ -402,6 +407,17 @@ def convert_example_to_features(example, max_seq_length, tokenizer):
     return features
 
 
+def masked_lm_accuracy_fn(out, labels):
+    outputs = np.argmax(out, axis=-1)
+    # TODO caculate per sentence level
+    return ma.median(ma.masked_where(labels == -1, (outputs == labels).astype(float)))
+
+
+def next_sentence_accuracy_fn(out, labels):
+    outputs = np.argmax(out, axis=-1)
+    return np.sum(outputs == labels)
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -411,7 +427,7 @@ def main():
                         type=str,
                         # required=True,
                         help="The input train corpus.")
-    parser.add_argument("--bert_model", default=None, type=str, # required=True,
+    parser.add_argument("--bert_model", default=None, type=str,  # required=True,
                         help="Bert pre-trained model selected in the list: bert-base-uncased, "
                              "bert-large-uncased, bert-base-cased, bert-base-multilingual, bert-base-chinese.")
     parser.add_argument("--output_dir",
@@ -472,23 +488,24 @@ def main():
                         action='store_true',
                         help="Whether to use 16-bit float precision instead of 32-bit")
     parser.add_argument('--loss_scale',
-                        type = float, default = 0,
-                        help = "Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
-                        "0 (default value): dynamic loss scaling.\n"
-                        "Positive power of 2: static loss scaling value.\n")
+                        type=float, default=0,
+                        help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
+                             "0 (default value): dynamic loss scaling.\n"
+                             "Positive power of 2: static loss scaling value.\n")
 
     args = parser.parse_args()
 
     # configuration
     args.do_train = True
-    args.train_file = "/mnt/disks/disk-01/ai-dev/rakuten_corpus/rakuten_corpus_reformated.txt"
-    args.bert_model = "/home/weicheng.zhu/experiment/bert-japanese/model"
+    args.train_file = "../glue_data/RITS/corpus.txt"
+    args.fp16 = False
+    args.bert_model = "../model/"
     args.do_lower_case = False
     args.max_seq_length = 128
     args.train_batch_size = 32
     args.learning_rate = 3e-5
-    args.num_train_epochs = 1.0
-    args.output_dir = "./finetuning_models/"
+    args.num_train_epochs = 2000.0
+    args.output_dir = "../model/"
 
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -504,7 +521,7 @@ def main():
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
-                            args.gradient_accumulation_steps))
+            args.gradient_accumulation_steps))
 
     args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
@@ -517,19 +534,22 @@ def main():
     if not args.do_train:
         raise ValueError("Training is currently the only implemented execution option. Please set `do_train`.")
 
-    if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
-        raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
-    if not os.path.exists(args.output_dir):
+    if not (os.path.exists(args.output_dir) and os.listdir(args.output_dir)):
+        # raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
         os.makedirs(args.output_dir)
 
-    # tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
     model_file = os.path.join(args.bert_model, "wiki-ja.model")
     vocab_file = os.path.join(args.bert_model, "wiki-ja.vocab")
-    tokenizer = tokenization.FullTokenizer(
-        model_file=model_file, vocab_file=vocab_file,
-        do_lower_case=args.do_lower_case)
+    if os.path.exists(model_file) and os.path.exists(vocab_file):
+        import tokenization_sentencepiece as tokenization
 
-    #train_examples = None
+        tokenizer = tokenization.FullTokenizer(
+            model_file=model_file, vocab_file=vocab_file,
+            do_lower_case=args.do_lower_case)
+    else:
+        tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
+
+    # train_examples = None
     num_train_optimization_steps = None
     if args.do_train:
         print("Loading Train Dataset", args.train_file)
@@ -541,7 +561,14 @@ def main():
             num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
 
     # Prepare model
-    model = BertForPreTraining.from_pretrained(args.bert_model)
+    if os.path.exists(os.path.join(args.bert_model, "pytorch_model.bin")):
+        logger.info("Loading pretrained model from {}".format(os.path.join(args.bert_model, "pytorch_model.bin")))
+        model = BertForPreTraining.from_pretrained(args.bert_model)
+    else:
+        logger.info("Create pretrained model from scratch with config {}".format(os.path.join(args.bert_model, "bert_config.json")))
+        bert_config = BertConfig(vocab_size_or_config_json_file=os.path.join(args.bert_model, "bert_config.json"))
+        model = BertForPreTraining(config=bert_config)
+
     if args.fp16:
         model.half()
     model.to(device)
@@ -549,7 +576,8 @@ def main():
         try:
             from apex.parallel import DistributedDataParallel as DDP
         except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+            raise ImportError(
+                "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
         model = DDP(model)
     elif n_gpu > 1:
         model = torch.nn.DataParallel(model)
@@ -560,14 +588,15 @@ def main():
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-        ]
+    ]
 
     if args.fp16:
         try:
             from apex.optimizers import FP16_Optimizer
             from apex.optimizers import FusedAdam
         except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+            raise ImportError(
+                "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
 
         optimizer = FusedAdam(optimizer_grouped_parameters,
                               lr=args.learning_rate,
@@ -594,21 +623,23 @@ def main():
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_dataset)
         else:
-            #TODO: check if this works with current data generator from disk that relies on next(file)
+            # TODO: check if this works with current data generator from disk that relies on next(file)
             # (it doesn't return item back by index)
             train_sampler = DistributedSampler(train_dataset)
         train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
 
         model.train()
-        for _ in trange(int(args.num_train_epochs), desc="Epoch"):
+        for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             tr_loss = 0
+            masked_lm_accuracy, next_sentence_accuracy = 0, 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, lm_label_ids, is_next = batch
                 loss = model(input_ids, segment_ids, input_mask, lm_label_ids, is_next)
+
                 if n_gpu > 1:
-                    loss = loss.mean() # mean() to average on multi-gpu.
+                    loss = loss.mean()  # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
                 if args.fp16:
@@ -622,14 +653,44 @@ def main():
                     if args.fp16:
                         # modify learning rate with special warm up BERT uses
                         # if args.fp16 is False, BertAdam is used that handles this automatically
-                        lr_this_step = args.learning_rate * warmup_linear(global_step/num_train_optimization_steps, args.warmup_proportion)
+                        lr_this_step = args.learning_rate * warmup_linear(global_step / num_train_optimization_steps,
+                                                                          args.warmup_proportion)
                         for param_group in optimizer.param_groups:
                             param_group['lr'] = lr_this_step
                     optimizer.step()
                     optimizer.zero_grad()
                     global_step += 1
 
-        # Save a trained model
+                masked_lm_log_probs, next_sentence_log_probs = model(input_ids, segment_ids, input_mask)
+                lm_label_ids = lm_label_ids.detach().cpu().numpy()
+                is_next = is_next.to('cpu').numpy()
+                masked_lm_log_probs = masked_lm_log_probs.detach().cpu().numpy()
+                next_sentence_log_probs = next_sentence_log_probs.detach().cpu().numpy()
+
+                tmp_masked_lm_accuracy = masked_lm_accuracy_fn(masked_lm_log_probs, lm_label_ids)
+                tmp_next_sentence_accuracy = next_sentence_accuracy_fn(next_sentence_log_probs, is_next)
+                masked_lm_accuracy += tmp_masked_lm_accuracy
+                next_sentence_accuracy += tmp_next_sentence_accuracy
+
+            result = {'epoch': epoch,
+                      'global_step': global_step,
+                      'loss': tr_loss / nb_tr_steps,
+                      'masked_lm_accuracy': masked_lm_accuracy / nb_tr_steps,
+                      'next_sentence_accuracy': next_sentence_accuracy / nb_tr_examples}
+
+            logger.info("***** Train results *****")
+            for key in sorted(result.keys()):
+                logger.info("  %s = %s", key, str(result[key]))
+
+            # Save a trained model
+            logger.info("** ** * Saving fine - tuned model ** ** * ")
+            model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
+            num_saved = epoch % 3
+            output_model_file = os.path.join(args.output_dir, f"pytorch_model-{num_saved}.bin")
+            if args.do_train:
+                torch.save(model_to_save.state_dict(), output_model_file)
+
+        # Save the final trained model
         logger.info("** ** * Saving fine - tuned model ** ** * ")
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
         output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")

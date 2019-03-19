@@ -9,10 +9,8 @@ from __future__ import print_function
 
 import collections
 import re
-import unicodedata
 import sentencepiece as sp
 import six
-import tensorflow as tf
 
 
 def validate_case_matches_checkpoint(do_lower_case, init_checkpoint):
@@ -112,9 +110,9 @@ def load_vocab(vocab_file):
     """Loads a vocabulary file into a dictionary."""
     vocab = collections.OrderedDict()
     index = 0
-    with tf.gfile.GFile(vocab_file, "r") as reader:
+    with open(vocab_file, "r", encoding="utf-8") as reader:
         while True:
-            token = convert_to_unicode(reader.readline())
+            token = reader.readline()
             if not token:
                 break
             token, _ = token.split("\t")
@@ -186,3 +184,20 @@ class SentencePieceTokenizer(object):
             text = text.lower()
         output_tokens = self.tokenizer.EncodeAsPieces(text)
         return output_tokens
+
+
+if __name__ == "__main__":
+    import os
+    from pytorch_pretrained_bert.tokenization import BertTokenizer
+    bert_model = "../model"
+    do_lower_case = False
+    model_file = os.path.join(bert_model, "wiki-ja.model")
+    vocab_file = os.path.join(bert_model, "wiki-ja.vocab")
+    if os.path.exists(model_file) and os.path.exists(vocab_file):
+        tokenizer = FullTokenizer(
+            model_file=model_file, vocab_file=vocab_file,
+            do_lower_case=do_lower_case)
+    else:
+        tokenizer = BertTokenizer.from_pretrained(bert_model, do_lower_case=do_lower_case)
+
+    print(tokenizer.tokenize("[CLS]西濃運輸の営業所に 電話をして、金曜日の夕方以降、無理なら土曜日の夕方以降に、とお願いしましたが結局、届いたのは日曜日。[CLS]外国[SEP]というか裸のままメール便の袋に入っていて、本当に新品なのか？と疑ってしまう状態でした。"))

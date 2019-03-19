@@ -22,8 +22,6 @@ from torch.utils.data import TensorDataset, DataLoader, RandomSampler, Sequentia
 from torch.utils.data.distributed import DistributedSampler
 from pytorch_pretrained_bert.optimization import BertAdam
 
-# In[ ]:
-
 
 import logging
 
@@ -32,20 +30,10 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# In[ ]:
 
-
-DATA_PATH = Path('./data/')
+DATA_PATH = Path('../../toxic_comments/')
 DATA_PATH.mkdir(exist_ok=True)
 
-DATA_PATH = Path('./data/toxic_comments/')
-DATA_PATH.mkdir(exist_ok=True)
-
-PATH = Path('./data/toxic_comments/')
-PATH.mkdir(exist_ok=True)
-
-CLAS_DATA_PATH = PATH / 'class'
-CLAS_DATA_PATH.mkdir(exist_ok=True)
 
 model_state_dict = None
 
@@ -57,7 +45,7 @@ BERT_PRETRAINED_PATH = Path("/home/weicheng.zhu/experiment/BERT-NER/multi_cased_
 
 # BERT_FINETUNED_WEIGHTS = Path('../trained_model/toxic_comments')
 
-PYTORCH_PRETRAINED_BERT_CACHE = Path('./cache/')
+PYTORCH_PRETRAINED_BERT_CACHE = Path('../../cache/')
 PYTORCH_PRETRAINED_BERT_CACHE.mkdir(exist_ok=True)
 
 # output_model_file = os.path.join(BERT_FINETUNED_WEIGHTS, "pytorch_model.bin")
@@ -68,18 +56,15 @@ PYTORCH_PRETRAINED_BERT_CACHE.mkdir(exist_ok=True)
 
 # ## Model Parameters
 
-# In[ ]:
-
-
 args = {
     "train_size": -1,
     "val_size": -1,
     "full_data_dir": DATA_PATH,
-    "data_dir": PATH,
+    "data_dir": DATA_PATH,
     "task_name": "toxic_multilabel",
     "no_cuda": False,
     "bert_model": BERT_PRETRAINED_PATH,
-    "output_dir": CLAS_DATA_PATH / 'output',
+    "output_dir": Path('/tmp/toxic_output'),
     "max_seq_length": 512,
     "do_train": True,
     "do_eval": True,
@@ -100,9 +85,6 @@ args = {
 
 
 # ###  Model Class
-
-# In[ ]:
-
 
 class BertForMultiLabelSequenceClassification(BertPreTrainedModel):
     """BERT model for classification.
@@ -208,9 +190,6 @@ class InputFeatures(object):
         self.label_ids = label_ids
 
 
-# In[ ]:
-
-
 class DataProcessor(object):
     """Base class for data converters for sequence classification data sets."""
 
@@ -229,9 +208,6 @@ class DataProcessor(object):
     def get_labels(self):
         """Gets the list of labels for this data set."""
         raise NotImplementedError()
-
-
-# In[ ]:
 
 
 class MultiLabelTextProcessor(DataProcessor):
@@ -291,9 +267,6 @@ class MultiLabelTextProcessor(DataProcessor):
             examples.append(
                 InputExample(guid=guid, text_a=text_a, labels=labels))
         return examples
-
-
-# In[ ]:
 
 
 def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer):
@@ -382,9 +355,6 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
     return features
 
 
-# In[ ]:
-
-
 def _truncate_seq_pair(tokens_a, tokens_b, max_length):
     """Truncates a sequence pair in place to the maximum length."""
 
@@ -403,9 +373,6 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
 
 
 # ## Metric functions
-
-# In[ ]:
-
 
 def accuracy(out, labels):
     outputs = np.argmax(out, axis=1)
@@ -435,19 +402,10 @@ def fbeta(y_pred: Tensor, y_true: Tensor, thresh: float = 0.2, beta: float = 2, 
 
 # ## Training warmup 
 
-# In[ ]:
-
-
 def warmup_linear(x, warmup=0.002):
     if x < warmup:
         return x / warmup
     return 1.0 - x
-
-
-# In[ ]:
-
-
-# In[ ]:
 
 
 processors = {
@@ -469,13 +427,7 @@ else:
 logger.info("device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".format(
     device, n_gpu, bool(args['local_rank'] != -1), args['fp16']))
 
-# In[ ]:
-
-
 args['train_batch_size'] = int(args['train_batch_size'] / args['gradient_accumulation_steps'])
-
-# In[ ]:
-
 
 random.seed(args['seed'])
 np.random.seed(args['seed'])
@@ -483,33 +435,22 @@ torch.manual_seed(args['seed'])
 if n_gpu > 0:
     torch.cuda.manual_seed_all(args['seed'])
 
-# In[ ]:
-
 
 task_name = args['task_name'].lower()
 
 if task_name not in processors:
     raise ValueError("Task not found: %s" % (task_name))
 
-# In[ ]:
-
-
 processor = processors[task_name](args['data_dir'])
 label_list = [0, 1, 2, 3, 4, 5]  # processor.get_labels()
 num_labels = len(label_list)
 
-# In[ ]:
-
 
 label_list
 
-# In[ ]:
 
 
 tokenizer = BertTokenizer.from_pretrained(args['bert_model'], do_lower_case=args['do_lower_case'])
-
-# In[ ]:
-
 
 train_examples = None
 num_train_steps = None
@@ -518,10 +459,6 @@ if args['do_train']:
     #     train_examples = processor.get_train_examples(args['data_dir'], size=args['train_size'])
     num_train_steps = int(
         len(train_examples) / args['train_batch_size'] / args['gradient_accumulation_steps'] * args['num_train_epochs'])
-
-
-# In[ ]:
-
 
 # Prepare model
 def get_model():

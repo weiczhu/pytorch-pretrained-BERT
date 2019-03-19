@@ -1,5 +1,6 @@
 # coding=utf-8
 # Copyright 2018 The Google AI Language Team Authors and The HugginFace Inc. team.
+# Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,33 +15,39 @@
 # limitations under the License.
 """BERT finetuning runner."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
 
 import argparse
 import csv
 import logging
 import os
 import random
+import sys
+
+os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 
 import numpy as np
 import torch
-from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from pytorch_pretrained_bert.modeling import BertForSequenceClassification
-from pytorch_pretrained_bert.optimization import BertAdam
-from pytorch_pretrained_bert.tokenization import BertTokenizer
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
+from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
+                              TensorDataset)
 from torch.utils.data.distributed import DistributedSampler
+
 from tqdm import tqdm, trange
 
-from metrics import accuracy, precision, recall, f1
+from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
+from pytorch_pretrained_bert.modeling import BertForSequenceClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
+from pytorch_pretrained_bert.tokenization import BertTokenizer
+from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
+
+import tokenization_sentencepiece as tokenization
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
                     level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__ + "log")
 
+
+PAD_TOKEN = "<pad>"
 
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
@@ -91,10 +98,12 @@ class DataProcessor(object):
     @classmethod
     def _read_tsv(cls, input_file, quotechar=None):
         """Reads a tab separated value file."""
-        with open(input_file, "r", encoding="utf-8") as f:
+        with open(input_file, "r") as f:
             reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
             lines = []
             for line in reader:
+                if sys.version_info[0] == 2:
+                    line = list(unicode(cell, 'utf-8') for cell in line)
                 lines.append(line)
             return lines
 
@@ -225,67 +234,6 @@ class JaitProcessor(DataProcessor):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, i)
-            text_a = line[1]
-            label = line[0]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-        return examples
-
-
-class EnitProcessor(DataProcessor):
-    """Processor for the MRPC data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
-
-    def get_labels(self):
-        """See base class."""
-        return ['__label__10_what_additional_charge', '__label__11_how_book_according_number',
-                '__label__12_why_rates_uneven_same_type', '__label__13_how_get_discount', '__label__14_how_pay',
-                '__label__15_what_settlement_currency', '__label__16_check_credit_card_match',
-                '__label__17_what_accommodation_tax', '__label__18_what_bathing_tax', '__label__1_no_room_booking',
-                '__label__23_how_check_not_on_page', '__label__24_how_reserve_car_park',
-                '__label__25_what_info_child_meal', '__label__27_what_info_bed', '__label__28_what_single_room',
-                '__label__29_what_twin_room', '__label__2_how_book_multiple_rooms', '__label__30_what_double_room',
-                '__label__31_what_triple_room', '__label__32_what_japanese_room', '__label__33_what_semi_western_room',
-                '__label__34_what_dormitory_room', '__label__35_what_capsule_hotel', '__label__36_what_shuttle_bus',
-                '__label__37_how_contact_hotel', '__label__38_how_reach_hotel', '__label__39_how_shorten_stay',
-                '__label__3_how_book_for_others', '__label__40_change_payment_after',
-                '__label__41_change_name_contact_info', '__label__42_how_change_guest_number',
-                '__label__44_how_change_repast', '__label__45_what_do_check_in_late',
-                '__label__48_how_book_adjoining_room', '__label__49_how_book_upper_floor',
-                '__label__50_how_consecutive_same_room', '__label__53_how_store_luggage',
-                '__label__54_how_send_luggage', '__label__55_how_add_guest_same_book', '__label__56_how_add_children',
-                '__label__57_how_rent_car', '__label__59_how_join_rakuten_travel', '__label__5_reservations_children',
-                '__label__61_how_charge_cancel_policy', '__label__62_what_cancellation_procedure',
-                '__label__63_why_cancel_button_disappear', '__label__64_how_confirm_cancellation',
-                '__label__65_how_reactivate_cancelled_book', '__label__66_when_receive_refund_credit',
-                '__label__67_when_charge_cancellation_fee', '__label__68_what_currency_refund',
-                '__label__69_why_different_refund_initial', '__label__6_reservations_minors',
-                '__label__70_how_get_refund_oversea', '__label__71_fee_before_cancellation_fee',
-                '__label__72_how_check_book_details', '__label__73_how_access_my_booking',
-                '__label__74_how_deal_lost_book_number', '__label__78_what_notice_rakuten_hotel',
-                '__label__7_how_check_in', '__label__81_contact_us', '__label__8_charge_deposit_in_advance',
-                '__label__9_how_service_charge_rakuten', '__label__g_1_receipt', '__label__g_4_reservation_error',
-                '__label__g_6_cancellation_policy', '__label__g_7_smoking_information']
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in enumerate(lines):
-            if i == 0:
-                continue
             guid = "%s-%s" % (set_type, i)
             text_a = line[1]
             label = line[0]
@@ -299,28 +247,60 @@ class RitcProcessor(DataProcessor):
 
     def get_train_examples(self, data_dir):
         """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.csv")), "dev")
 
     def get_labels(self):
         """See base class."""
-        return ['-1', '0', '1']
+        return ["-1", "0", "1"]
 
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
+
         examples = []
         for (i, line) in enumerate(lines):
-            if i == 0:
-                continue
             guid = "%s-%s" % (set_type, i)
-            text_a = line[1]
-            label = line[0]
+            text_a = line[1].strip()
+            label = line[0].strip()
+
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+        return examples
+
+
+class SecbProcessor(DataProcessor):
+    """Processor for the MRPC data set (GLUE version)."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.csv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return ['__label__QAあり', '__label__QAなし', '__label__ゴミ']
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+
+        examples = []
+        for (i, line) in enumerate(lines):
+            guid = "%s-%s" % (set_type, i)
+            text_a = line[1].strip()
+            label = line[0].strip()
+
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
         return examples
@@ -374,13 +354,17 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
 
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
+
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
         # tokens are attended to.
         input_mask = [1] * len(input_ids)
 
         # Zero-pad up to the sequence length.
-        padding = [0] * (max_seq_length - len(input_ids))
+        padding = [tokenizer.vocab[PAD_TOKEN]] * (max_seq_length - len(input_ids))
         input_ids += padding
+
+        # padding differently than the input ids
+        padding = [0] * len(padding)
         input_mask += padding
         segment_ids += padding
 
@@ -425,40 +409,9 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
             tokens_b.pop()
 
 
-# def accuracy(out, labels):
-#     outputs = np.argmax(out, axis=1)
-#     return np.sum(outputs == labels)
-
-
-def copy_optimizer_params_to_model(named_params_model, named_params_optimizer):
-    """ Utility function for optimize_on_cpu and 16-bits training.
-        Copy the parameters optimized on CPU/RAM back to the model on GPU
-    """
-    for (name_opti, param_opti), (name_model, param_model) in zip(named_params_optimizer, named_params_model):
-        if name_opti != name_model:
-            logger.error("name_opti != name_model: {} {}".format(name_opti, name_model))
-            raise ValueError
-        param_model.data.copy_(param_opti.data)
-
-
-def set_optimizer_params_grad(named_params_optimizer, named_params_model, test_nan=False):
-    """ Utility function for optimize_on_cpu and 16-bits training.
-        Copy the gradient of the GPU parameters to the CPU/RAMM copy of the model
-    """
-    is_nan = False
-    for (name_opti, param_opti), (name_model, param_model) in zip(named_params_optimizer, named_params_model):
-        if name_opti != name_model:
-            logger.error("name_opti != name_model: {} {}".format(name_opti, name_model))
-            raise ValueError
-        if param_model.grad is not None:
-            if test_nan and torch.isnan(param_model.grad).sum() > 0:
-                is_nan = True
-            if param_opti.grad is None:
-                param_opti.grad = torch.nn.Parameter(param_opti.data.new().resize_(*param_opti.data.size()))
-            param_opti.grad.data.copy_(param_model.grad.data)
-        else:
-            param_opti.grad = None
-    return is_nan
+def accuracy(out, labels):
+    outputs = np.argmax(out, axis=1)
+    return np.sum(outputs == labels)
 
 
 def main():
@@ -468,23 +421,28 @@ def main():
     parser.add_argument("--data_dir",
                         default=None,
                         type=str,
-                        required=True,
+                        # required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
-    parser.add_argument("--bert_model", default=None, type=str, required=True,
+    parser.add_argument("--bert_model", default=None, type=str,  # required=True,
                         help="Bert pre-trained model selected in the list: bert-base-uncased, "
-                             "bert-large-uncased, bert-base-cased, bert-base-multilingual, bert-base-chinese.")
+                             "bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased, "
+                             "bert-base-multilingual-cased, bert-base-chinese.")
     parser.add_argument("--task_name",
                         default=None,
                         type=str,
-                        required=True,
+                        # required=True,
                         help="The name of the task to train.")
     parser.add_argument("--output_dir",
                         default=None,
                         type=str,
-                        required=True,
-                        help="The output directory where the model checkpoints will be written.")
+                        # required=True,
+                        help="The output directory where the model predictions and checkpoints will be written.")
 
     ## Other parameters
+    parser.add_argument("--cache_dir",
+                        default="",
+                        type=str,
+                        help="Where do you want to store the pre-trained models downloaded from s3")
     parser.add_argument("--max_seq_length",
                         default=128,
                         type=int,
@@ -492,15 +450,12 @@ def main():
                              "Sequences longer than this will be truncated, and sequences shorter \n"
                              "than this will be padded.")
     parser.add_argument("--do_train",
-                        default=False,
                         action='store_true',
                         help="Whether to run training.")
     parser.add_argument("--do_eval",
-                        default=False,
                         action='store_true',
                         help="Whether to run eval on the dev set.")
     parser.add_argument("--do_lower_case",
-                        default=False,
                         action='store_true',
                         help="Set this flag if you are using an uncased model.")
     parser.add_argument("--train_batch_size",
@@ -525,7 +480,6 @@ def main():
                         help="Proportion of training to perform linear learning rate warmup for. "
                              "E.g., 0.1 = 10%% of training.")
     parser.add_argument("--no_cuda",
-                        default=False,
                         action='store_true',
                         help="Whether not to use CUDA when available")
     parser.add_argument("--local_rank",
@@ -540,56 +494,82 @@ def main():
                         type=int,
                         default=1,
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument('--optimize_on_cpu',
-                        default=False,
-                        action='store_true',
-                        help="Whether to perform optimization and keep the optimizer averages on CPU")
     parser.add_argument('--fp16',
-                        default=False,
                         action='store_true',
                         help="Whether to use 16-bit float precision instead of 32-bit")
     parser.add_argument('--loss_scale',
-                        type=float, default=128,
-                        help='Loss scaling, positive power of 2 values can improve fp16 convergence.')
-
+                        type=float, default=0,
+                        help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
+                             "0 (default value): dynamic loss scaling.\n"
+                             "Positive power of 2: static loss scaling value.\n")
+    parser.add_argument('--server_ip', type=str, default='', help="Can be used for distant debugging.")
+    parser.add_argument('--server_port', type=str, default='', help="Can be used for distant debugging.")
     args = parser.parse_args()
+
+    # configuration
+    # args.task_name = "JAIT"
+    # args.data_dir = "/home/weicheng.zhu/experiment/pytorch-pretrained-BERT/glue_data/JAIT"
+    # args.output_dir = "/tmp/jait_output_best/"
+    # args.task_name = "SECB"
+    # args.data_dir = "/home/francisco.tacoa/work/jupyter/flair/secb/201902/20190221/20190224210431/"
+    # args.output_dir = "/tmp/secb_output_best_wordpiece/"
+    # args.output_dir = "/tmp/secb_output_best_sentencepiece/"
+    args.task_name = "RITC"
+    args.data_dir = "../glue_data/RITS/"
+    args.output_dir = "/tmp/ritc_output_best/"
+
+    args.do_train = True
+    args.do_eval = True
+    args.fp16 = False
+    # args.bert_model = "bert-base-multilingual-cased"
+    # args.bert_model = "/home/weicheng.zhu/pretrained/multi_cased_L-12_H-768_A-12/"
+    # args.bert_model = "/home/weicheng.zhu/pretrained/japanese_sentencepiece_L-12_H-768_A-12/"
+    args.bert_model = "../model/"
+    args.max_seq_length = 128
+    args.train_batch_size = 8
+    args.learning_rate = 3e-5
+    args.num_train_epochs = 10.0
+
+    if args.server_ip and args.server_port:
+        # Distant debugging - see https://code.visualstudio.com/docs/python/debugging#_attach-to-a-local-script
+        import ptvsd
+        print("Waiting for debugger attach")
+        ptvsd.enable_attach(address=(args.server_ip, args.server_port), redirect_output=True)
+        ptvsd.wait_for_attach()
 
     processors = {
         "cola": ColaProcessor,
         "mnli": MnliProcessor,
         "mrpc": MrpcProcessor,
         "jait": JaitProcessor,
-        "enit": EnitProcessor,
         "ritc": RitcProcessor,
+        "secb": SecbProcessor,
     }
 
-    num_labels_task = {
-        "cola": 2,
-        "mnli": 3,
-        "mrpc": 2,
-        "jait": 30,
-        "enit": 67,
-        "ritc": 3,
-    }
+    # num_labels_task = {
+    #     "cola": 2,
+    #     "mnli": 3,
+    #     "mrpc": 2,
+    #     "jait": 30,
+    # }
 
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         n_gpu = torch.cuda.device_count()
     else:
+        torch.cuda.set_device(args.local_rank)
         device = torch.device("cuda", args.local_rank)
         n_gpu = 1
         # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
         torch.distributed.init_process_group(backend='nccl')
-        if args.fp16:
-            logger.info("16-bits training currently not supported in distributed training")
-            args.fp16 = False  # (see https://github.com/pytorch/pytorch/pull/13496)
-    logger.info("device %s n_gpu %d distributed training %r", device, n_gpu, bool(args.local_rank != -1))
+    logger.info("device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".format(
+        device, n_gpu, bool(args.local_rank != -1), args.fp16))
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
             args.gradient_accumulation_steps))
 
-    args.train_batch_size = int(args.train_batch_size / args.gradient_accumulation_steps)
+    args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -600,9 +580,9 @@ def main():
     if not args.do_train and not args.do_eval:
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
-    if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
-        raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
-    os.makedirs(args.output_dir, exist_ok=True)
+    if not (os.path.exists(args.output_dir) and os.listdir(args.output_dir)):
+        # raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
+        os.makedirs(args.output_dir, exist_ok=True)
 
     task_name = args.task_name.lower()
 
@@ -610,62 +590,90 @@ def main():
         raise ValueError("Task not found: %s" % (task_name))
 
     processor = processors[task_name]()
-    num_labels = num_labels_task[task_name]
+    # num_labels = num_labels_task[task_name]
     label_list = processor.get_labels()
+    num_labels = len(label_list)
 
-    tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
+    model_file = os.path.join(args.bert_model, "wiki-ja.model")
+    vocab_file = os.path.join(args.bert_model, "wiki-ja.vocab")
+    if os.path.exists(model_file) and os.path.exists(vocab_file):
+        tokenizer = tokenization.FullTokenizer(
+            model_file=model_file, vocab_file=vocab_file,
+            do_lower_case=args.do_lower_case)
+    else:
+        tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
 
     train_examples = None
-    num_train_steps = None
+    num_train_optimization_steps = None
     if args.do_train:
         train_examples = processor.get_train_examples(args.data_dir)
-        num_train_steps = int(
-            len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
+        num_train_optimization_steps = int(
+            len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
+        if args.local_rank != -1:
+            num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
 
     # Prepare model
+    cache_dir = args.cache_dir if args.cache_dir else os.path.join(PYTORCH_PRETRAINED_BERT_CACHE,
+                                                                   'distributed_{}'.format(args.local_rank))
     model = BertForSequenceClassification.from_pretrained(args.bert_model,
-                                                          cache_dir=PYTORCH_PRETRAINED_BERT_CACHE / 'distributed_{}'.format(
-                                                              args.local_rank),
+                                                          cache_dir=cache_dir,
                                                           num_labels=num_labels)
     if args.fp16:
         model.half()
     model.to(device)
     if args.local_rank != -1:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
-                                                          output_device=args.local_rank)
+        try:
+            from apex.parallel import DistributedDataParallel as DDP
+        except ImportError:
+            raise ImportError(
+                "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+
+        model = DDP(model)
     elif n_gpu > 1:
         model = torch.nn.DataParallel(model)
 
     # Prepare optimizer
-    if args.fp16:
-        param_optimizer = [(n, param.clone().detach().to('cpu').float().requires_grad_()) \
-                           for n, param in model.named_parameters()]
-    elif args.optimize_on_cpu:
-        param_optimizer = [(n, param.clone().detach().to('cpu').requires_grad_()) \
-                           for n, param in model.named_parameters()]
-    else:
-        param_optimizer = list(model.named_parameters())
-    no_decay = ['bias', 'gamma', 'beta']
+    param_optimizer = list(model.named_parameters())
+    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
-        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
-        {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.0}
+        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
+        {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
-    t_total = num_train_steps
-    if args.local_rank != -1:
-        t_total = t_total // torch.distributed.get_world_size()
-    optimizer = BertAdam(optimizer_grouped_parameters,
-                         lr=args.learning_rate,
-                         warmup=args.warmup_proportion,
-                         t_total=t_total)
+    if args.fp16:
+        try:
+            from apex.optimizers import FP16_Optimizer
+            from apex.optimizers import FusedAdam
+        except ImportError:
+            raise ImportError(
+                "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+
+        optimizer = FusedAdam(optimizer_grouped_parameters,
+                              lr=args.learning_rate,
+                              bias_correction=False,
+                              max_grad_norm=1.0)
+        if args.loss_scale == 0:
+            optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True)
+        else:
+            optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.loss_scale)
+
+    else:
+        optimizer = BertAdam(optimizer_grouped_parameters,
+                             lr=args.learning_rate,
+                             warmup=args.warmup_proportion,
+                             t_total=num_train_optimization_steps)
+
+    # optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, betas=[0.7, 0.99])
 
     global_step = 0
+    nb_tr_steps = 0
+    tr_loss = 0
     if args.do_train:
         train_features = convert_examples_to_features(
             train_examples, label_list, args.max_seq_length, tokenizer)
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
-        logger.info("  Num steps = %d", num_train_steps)
+        logger.info("  Num steps = %d", num_train_optimization_steps)
         all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
@@ -685,38 +693,32 @@ def main():
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
+
                 input_ids, input_mask, segment_ids, label_ids = batch
                 loss = model(input_ids, segment_ids, input_mask, label_ids)
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
-                if args.fp16 and args.loss_scale != 1.0:
-                    # rescale loss for fp16 training
-                    # see https://docs.nvidia.com/deeplearning/sdk/mixed-precision-training/index.html
-                    loss = loss * args.loss_scale
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
-                loss.backward()
+
+                if args.fp16:
+                    optimizer.backward(loss)
+                else:
+                    loss.backward()
+
                 tr_loss += loss.item()
                 nb_tr_examples += input_ids.size(0)
                 nb_tr_steps += 1
                 if (step + 1) % args.gradient_accumulation_steps == 0:
-                    if args.fp16 or args.optimize_on_cpu:
-                        if args.fp16 and args.loss_scale != 1.0:
-                            # scale down gradients for fp16 training
-                            for param in model.parameters():
-                                if param.grad is not None:
-                                    param.grad.data = param.grad.data / args.loss_scale
-                        is_nan = set_optimizer_params_grad(param_optimizer, model.named_parameters(), test_nan=True)
-                        if is_nan:
-                            logger.info("FP16 TRAINING: Nan in gradients, reducing loss scaling")
-                            args.loss_scale = args.loss_scale / 2
-                            model.zero_grad()
-                            continue
-                        optimizer.step()
-                        copy_optimizer_params_to_model(model.named_parameters(), param_optimizer)
-                    else:
-                        optimizer.step()
-                    model.zero_grad()
+                    if args.fp16:
+                        # modify learning rate with special warm up BERT uses
+                        # if args.fp16 is False, BertAdam is used that handles this automatically
+                        lr_this_step = args.learning_rate * warmup_linear(global_step / num_train_optimization_steps,
+                                                                          args.warmup_proportion)
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = lr_this_step
+                    optimizer.step()
+                    optimizer.zero_grad()
                     global_step += 1
 
             if args.do_eval and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
@@ -736,9 +738,11 @@ def main():
                 eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
                 model.eval()
-                eval_loss, eval_accuracy, eval_precision, eval_recall, eval_f1 = 0, 0, 0, 0, 0
+                eval_loss, eval_accuracy = 0, 0
                 nb_eval_steps, nb_eval_examples = 0, 0
-                for input_ids, input_mask, segment_ids, label_ids in eval_dataloader:
+                all_output_ids = []
+
+                for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
                     input_ids = input_ids.to(device)
                     input_mask = input_mask.to(device)
                     segment_ids = segment_ids.to(device)
@@ -751,33 +755,24 @@ def main():
                     logits = logits.detach().cpu().numpy()
                     label_ids = label_ids.to('cpu').numpy()
                     tmp_eval_accuracy = accuracy(logits, label_ids)
-                    tmp_eval_precision = precision(logits, label_ids)
-                    tmp_eval_recall = recall(logits, label_ids)
-                    tmp_eval_f1 = f1(logits, label_ids)
+
+                    outputs = np.argmax(logits, axis=1)
+                    all_output_ids = np.append(all_output_ids, outputs, axis=0)
 
                     eval_loss += tmp_eval_loss.mean().item()
                     eval_accuracy += tmp_eval_accuracy
-                    eval_precision += tmp_eval_precision
-                    eval_recall += tmp_eval_recall
-                    eval_f1 += tmp_eval_f1
 
                     nb_eval_examples += input_ids.size(0)
                     nb_eval_steps += 1
 
                 eval_loss = eval_loss / nb_eval_steps
-                eval_accuracy = eval_accuracy / nb_eval_steps
-                eval_precision = eval_precision / nb_eval_steps
-                eval_recall = eval_recall / nb_eval_steps
-                eval_f1 = eval_f1 / nb_eval_steps
-
+                eval_accuracy = eval_accuracy / nb_eval_examples
+                loss = tr_loss / nb_tr_steps if args.do_train else None
                 result = {'eval_loss': eval_loss,
                           'eval_accuracy': eval_accuracy,
-                          'eval_precision': eval_precision,
-                          'eval_recall': eval_recall,
-                          'eval_f1': eval_f1,
-                          'epoch': epoch,
                           'global_step': global_step,
-                          'loss': tr_loss / nb_tr_steps}
+                          'epoch': epoch,
+                          'loss': loss}
 
                 logger.info("***** Eval results *****")
                 for key in sorted(result.keys()):
@@ -793,6 +788,123 @@ def main():
 
                     output_model_file = os.path.join(args.output_dir, "model-export-best.hkl")
                     torch.save(model, output_model_file)
+
+                    eval_report_input_ids = all_input_ids.numpy().tolist()
+                    eval_report_output_ids = all_output_ids.astype(int).tolist()
+                    eval_report_label_ids = all_label_ids.numpy().tolist()
+
+                    output_report_file = os.path.join(args.output_dir, "eval_report-best.txt")
+                    with open(output_report_file, "w") as writer:
+                        for input_ids, output_id, label_id in zip(eval_report_input_ids, eval_report_output_ids,
+                                                                  eval_report_label_ids):
+                            input_tokens = tokenizer.convert_ids_to_tokens(input_ids)
+                            input_tokens = filter(lambda x: x not in [PAD_TOKEN, "[CLS]", "[SEP]"], input_tokens)
+                            input_text = ""
+                            for token in input_tokens:
+                                if token.startswith("##"):
+                                    input_text += token.replace("##", "")
+                                else:
+                                    input_text += " " + token
+                            line = "{}\t{}\t{}\n".format(label_list[output_id],
+                                                         label_list[label_id],
+                                                         input_text)
+                            writer.write(line)
+
+    if args.do_train:
+        # Save a trained model and the associated configuration
+        model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
+        output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
+        torch.save(model_to_save.state_dict(), output_model_file)
+        output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
+        with open(output_config_file, 'w') as f:
+            f.write(model_to_save.config.to_json_string())
+
+        # Load a trained model and config that you have fine-tuned
+        config = BertConfig(output_config_file)
+        model = BertForSequenceClassification(config, num_labels=num_labels)
+        model.load_state_dict(torch.load(output_model_file))
+    else:
+        model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
+    model.to(device)
+
+    if args.do_eval and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
+        eval_examples = processor.get_dev_examples(args.data_dir)
+        eval_features = convert_examples_to_features(
+            eval_examples, label_list, args.max_seq_length, tokenizer)
+        logger.info("***** Running evaluation *****")
+        logger.info("  Num examples = %d", len(eval_examples))
+        logger.info("  Batch size = %d", args.eval_batch_size)
+        all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
+        all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
+        all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
+        all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
+        eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+        # Run prediction for full data
+        eval_sampler = SequentialSampler(eval_data)
+        eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+
+        model.eval()
+        eval_loss, eval_accuracy = 0, 0
+        nb_eval_steps, nb_eval_examples = 0, 0
+
+        for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
+            input_ids = input_ids.to(device)
+            input_mask = input_mask.to(device)
+            segment_ids = segment_ids.to(device)
+            label_ids = label_ids.to(device)
+
+            with torch.no_grad():
+                tmp_eval_loss = model(input_ids, segment_ids, input_mask, label_ids)
+                logits = model(input_ids, segment_ids, input_mask)
+
+            logits = logits.detach().cpu().numpy()
+            label_ids = label_ids.to('cpu').numpy()
+            tmp_eval_accuracy = accuracy(logits, label_ids)
+
+            eval_loss += tmp_eval_loss.mean().item()
+            eval_accuracy += tmp_eval_accuracy
+
+            nb_eval_examples += input_ids.size(0)
+            nb_eval_steps += 1
+
+        eval_loss = eval_loss / nb_eval_steps
+        eval_accuracy = eval_accuracy / nb_eval_examples
+        loss = tr_loss / nb_tr_steps if args.do_train else None
+        result = {'eval_loss': eval_loss,
+                  'eval_accuracy': eval_accuracy,
+                  'global_step': global_step,
+                  'loss': loss}
+
+        output_eval_file = os.path.join(args.output_dir, "eval_results-last.txt")
+        with open(output_eval_file, "w") as writer:
+            logger.info("***** Eval results *****")
+            for key in sorted(result.keys()):
+                logger.info("  %s = %s", key, str(result[key]))
+                writer.write("%s = %s\n" % (key, str(result[key])))
+
+        output_model_file = os.path.join(args.output_dir, "model-export-last.hkl")
+        torch.save(model, output_model_file)
+
+        eval_report_input_ids = all_input_ids.numpy().tolist()
+        eval_report_output_ids = all_output_ids.astype(int).tolist()
+        eval_report_label_ids = all_label_ids.numpy().tolist()
+
+        output_report_file = os.path.join(args.output_dir, "eval_report-last.txt")
+        with open(output_report_file, "w") as writer:
+            for input_ids, output_id, label_id in zip(eval_report_input_ids, eval_report_output_ids,
+                                                      eval_report_label_ids):
+                input_tokens = tokenizer.convert_ids_to_tokens(input_ids)
+                input_tokens = filter(lambda x: x not in [PAD_TOKEN, "[CLS]", "[SEP]"], input_tokens)
+                input_text = ""
+                for token in input_tokens:
+                    if token.startswith("##"):
+                        input_text += token.replace("##", "")
+                    else:
+                        input_text += " " + token
+                line = "{}\t{}\t{}\n".format(label_list[output_id],
+                                             label_list[label_id],
+                                             input_text)
+                writer.write(line)
 
 
 if __name__ == "__main__":
